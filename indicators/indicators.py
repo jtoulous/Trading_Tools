@@ -4,7 +4,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.signal import hilbert
 
 # Transformer pour extraire des features de date
-class DateToFeature(BaseEstimator, TransformerMixin):
+class Date(BaseEstimator, TransformerMixin):
     def __init__(self):
         pass
 
@@ -12,13 +12,12 @@ class DateToFeature(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
-        X = X.copy()
-        X['DAY'] = X['timestamp'].dt.dayofweek + 1
-        X['DAY'] = X['DAY'].astype(float)
-        return X.dropna().reset_index(drop=True)
+        X['DAY'] = X['timestamp'].dt.dayofweek.astype(float) + 1
+        X['MONTH'] = X['timestamp'].dt.month.astype(float)
+        X['YEAR'] = X['timestamp'].dt.year.astype(float)
+        return X
 
 
-# TR : True Range
 class TR(BaseEstimator, TransformerMixin):
     def __init__(self):
         pass
@@ -27,60 +26,36 @@ class TR(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
-        X = X.copy()
+        X['TR'] = np.nan
+        
         prev_row = None
         for idx, row in X.iterrows():
-            if idx == 0:
-                X.loc[idx, 'TR'] = row['high'] - row['low']
-            else:
-                X.loc[idx, 'TR'] = max(row['high'] - row['low'], 
-                                        abs(row['high'] - prev_row['close']), 
-                                        abs(row['low'] - prev_row['close']))
+            if prev_row is not None:
+                X.loc[idx, 'TR'] = max(
+                    row['high'] - row['low'], 
+                    abs(row['high'] - prev_row['close']), 
+                    abs(row['low'] - prev_row['close'])
+                )
             prev_row = row
-        return X.dropna().reset_index(drop=True)
+        return X
 
 
-# PriceRange : simple difference high - low
-class PriceRange(BaseEstimator, TransformerMixin):
-    def __init__(self):
-        pass
- 
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X, y=None):
-        X = X.copy()
-        X['PR'] = X['high'] - X['low']
-        return X.dropna().reset_index(drop=True)
-
-
-# ATR : Average True Range
 class ATR(BaseEstimator, TransformerMixin):
     def __init__(self, periods):
         self.periods = periods
- 
+
     def fit(self, X, y=None):
         return self
 
     def transform(self, X, y=None):
-        X = X.copy()
-        tr = []
-        prev_row = None
-        for idx, row in X.iterrows():
-            if idx == 0:
-                tr_val = row['high'] - row['low']
-            else:
-                tr_val = max(row['high'] - row['low'], 
-                             abs(row['high'] - prev_row['close']), 
-                             abs(row['low'] - prev_row['close']))
-            tr.append(tr_val)
-            prev_row = row
-        tr = pd.Series(tr)
-        X[f'ATR{self.periods}'] = tr.rolling(window=self.periods, min_periods=1).mean()
-        return X.dropna().reset_index(drop=True)
+        if 'TR' not in X.columns:    
+            tr_transformer = TR()
+            X = tr_transformer.transform(X)
+        
+        X[f'ATR_{self.periods}'] = X['TR'].rolling(window=self.periods).mean()
+        return X
 
 
-# ADX : Average Directional Index
 class ADX(BaseEstimator, TransformerMixin):
     def __init__(self, periods):
         self.periods = periods
@@ -89,31 +64,31 @@ class ADX(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
-        X = X.copy()
-        X['H-L_TMP'] = X['high'] - X['low']
-        X['H-Close_TMP'] = abs(X['high'] - X['close'].shift())
-        X['L-Close_TMP'] = abs(X['low'] - X['close'].shift())
-        X['TR_TMP'] = X[['H-L_TMP', 'H-Close_TMP', 'L-Close_TMP']].max(axis=1)
+        # Si TR pas déjà présent, on le calcule avec le transformer dédié
+        if 'TR' not in X.columns:
+            tr_transformer = TR()
+            X = tr_transformer.transform(X)
 
-        X['+DM_TMP'] = X['high'].diff()
-        X['-DM_TMP'] = -X['low'].diff()
+        # +DM / -DM
+        plus_dm = X['high'].diff()
+        minus_dm = -X['low'].diff()
 
-        X['+DM_TMP'] = X['+DM_TMP'].where(X['+DM_TMP'] > 0, 0)
-        X['-DM_TMP'] = X['-DM_TMP'].where(X['-DM_TMP'] > 0, 0)
+        plus_dm = plus_dm.where((plus_dm > 0) & (plus_dm > minus_dm), 0)
+        minus_dm = minus_dm.where((minus_dm > 0) & (minus_dm > plus_dm), 0)
 
-        X['+DM_avg_TMP'] = X['+DM_TMP'].rolling(window=self.periods).mean()
-        X['-DM_avg_TMP'] = X['-DM_TMP'].rolling(window=self.periods).mean()
-        X['TR_avg_TMP'] = X['TR_TMP'].rolling(window=self.periods).mean()
+        # Moyennes
+        tr_avg = X['TR'].rolling(window=self.periods).mean()
+        plus_dm_avg = plus_dm.rolling(window=self.periods).mean()
+        minus_dm_avg = minus_dm.rolling(window=self.periods).mean()
 
-        X['+DI'] = 100 * X['+DM_avg_TMP'] / X['TR_avg_TMP']
-        X['-DI'] = 100 * X['-DM_avg_TMP'] / X['TR_avg_TMP']
+        plus_di = 100 * plus_dm_avg / tr_avg
+        minus_di = 100 * minus_dm_avg / tr_avg
 
-        X[f'ADX{self.periods}'] = 100 * (abs(X['+DI'] - X['-DI']) / (X['+DI'] + X['-DI'])).rolling(window=self.periods).mean()
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+        X[f'ADX_{self.periods}'] = dx.rolling(window=self.periods).mean()
 
-        X.drop(columns=['H-L_TMP', 'H-Close_TMP', 'L-Close_TMP', 'TR_TMP', 
-                        '+DM_TMP', '-DM_TMP', '+DM_avg_TMP', '-DM_avg_TMP', 'TR_avg_TMP',
-                        '+DI', '-DI'], inplace=True)
-        return X.dropna().reset_index(drop=True)
+        return X
+
 
 
 # EMA : Exponential Moving Average
@@ -125,40 +100,26 @@ class EMA(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):    
-        X = X.copy()
-        X[f'EMA{self.periods}'] = X['close'].ewm(span=self.periods, adjust=False).mean()
-        return X.dropna().reset_index(drop=True)
+        X[f'EMA_{self.periods}'] = X['close'].ewm(span=self.periods, adjust=False).mean()
+        return X
 
 
-# EMA Lagged : décaler l'EMA d'une période
-class EMA_Lagged(BaseEstimator, TransformerMixin):
-    def __init__(self, periods):
-        self.ema_periods = periods
 
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X, y=None):
-        X = X.copy()
-        X[f'EMA{self.ema_periods}_Lagged'] = X[f'EMA{self.ema_periods}'].shift(1)
-        return X.dropna().reset_index(drop=True)
-
-
-# EMA_SMA Ratio : Ratio entre EMA et SMA
-class EMA_SMA(BaseEstimator, TransformerMixin):
-    def __init__(self, periods):
-        self.ema_periods = periods
+class Lagged(BaseEstimator, TransformerMixin):
+    def __init__(self, columns, shift_val=1):
+        self.columns = columns
+        self.shift_val = shift_val
 
     def fit(self, X, y=None):
         return self
 
     def transform(self, X, y=None):
-        X = X.copy()
-        X[f'EMA{self.ema_periods}_SMA_Ratio'] = X[f'EMA{self.ema_periods}'] / X['SMA']
-        return X.dropna().reset_index(drop=True)
+        for column in self.columns:
+            X[f'{column}_lag_{self.shift_val}'] = X[column].shift(self.shift_val)
+        return X
 
 
-# RSI : Relative Strength Index
+
 class RSI(BaseEstimator, TransformerMixin):
     def __init__(self, periods):
         self.periods = periods
@@ -167,16 +128,27 @@ class RSI(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
-        X = X.copy()
         delta = X['close'].diff(1)
-        gain = delta.where(delta > 0, 0).fillna(0)
-        loss = (-delta).where(delta < 0, 0).fillna(0)
-        avg_gain = gain.rolling(window=self.periods, min_periods=1).mean()
-        avg_loss = loss.rolling(window=self.periods, min_periods=1).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
+        gain = delta.where(delta > 0, 0)
+        loss = (-delta).where(delta < 0, 0)
+
+        avg_gain = gain.rolling(window=self.periods).mean()
+        avg_loss = loss.rolling(window=self.periods).mean()
+
+s        rs = avg_gain / avg_loss.replace(0, np.nan)
+
         rsi = 100 - (100 / (1 + rs))
-        X[f'RSI{self.periods}'] = rsi
-        return X.dropna().reset_index(drop=True)
+        X[f'RSI_{self.periods}'] = rsi
+        
+        return X
+
+
+
+
+
+######################################################
+#              ICIIIII
+######################################################
 
 
 # STO : Stochastic Oscillator
@@ -215,23 +187,6 @@ class SMA(BaseEstimator, TransformerMixin):
         X['SMA'] = X['close'].rolling(window=self.periods, min_periods=1).mean()
         return X.dropna().reset_index(drop=True)
 
-
-# SMA_DIFF : Différence entre deux SMA
-class SMA_DIFF(BaseEstimator, TransformerMixin):
-    def __init__(self, period_1, period_2):
-        self.period_1 = period_1
-        self.period_2 = period_2
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X, y=None):
-        X = X.copy()
-        X['tmp_sma_1'] = X['close'].rolling(window=self.period_1, min_periods=1).mean()
-        X['tmp_sma_2'] = X['close'].rolling(window=self.period_2, min_periods=1).mean()
-        X[f'SMA_DIFF_{self.period_1}_{self.period_2}'] = X['tmp_sma_1'] - X['tmp_sma_2']
-        X.drop(columns=['tmp_sma_1', 'tmp_sma_2'], inplace=True)
-        return X.dropna().reset_index(drop=True)
 
 
 # WMA : Weighted Moving Average
