@@ -5,7 +5,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 
 
 class EngulfingCandles(BaseEstimator, TransformerMixin):
-    def __init__(self, col_name)
+    def __init__(self, col_name):
         self.col_name = col_name
 
     def fit(self, X, y=None):

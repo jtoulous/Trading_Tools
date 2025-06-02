@@ -1,4 +1,6 @@
+import numpy as np
 import pandas as pd
+
 from sklearn.base import BaseEstimator, TransformerMixin
 
 from .indicators import ATR, ADX
@@ -27,7 +29,7 @@ class VolatilityScorer(BaseEstimator, TransformerMixin):
             df[self.column_name] = np.tanh(df['ATR_zscore'])
         else:
             df['Volatility_score_tmp'] =  np.tanh(df['ATR_zscore'])
-            df[self.column_name] = df['Volatility_score_tmp'].shift(self.periods)
+            df[self.column_name] = df['Volatility_score_tmp'].shift(-self.periods)
 
         return X.assign(**{self.column_name: df[self.column_name]})
 
@@ -53,7 +55,7 @@ class TrendDirectionPowerScorer(BaseEstimator, TransformerMixin):
             df[self.column_name] = np.tanh(df['Trend_direction_zscore_tmp'])
         else:
             df['Trend_direction_score_tmp'] = np.tanh(df['Trend_direction_zscore_tmp'])
-            df[self.column_name] = df['Trend_direction_score_tmp'].shift(self.periods)
+            df[self.column_name] = df['Trend_direction_score_tmp'].shift(-self.periods)
 
         return X.assign(**{self.column_name: df[self.column_name]})
 
@@ -85,6 +87,60 @@ class TrendPersistanceScorer(BaseEstimator, TransformerMixin):
         persistence = (bullish_power - bearish_power) / (bullish_power + bearish_power).replace(0, np.nan)
 
         if self.shift:
-            persistence = persistence.shift(self.periods)
+            persistence = persistence.shift(-self.periods)
 
         return X.assign(**{self.column_name: persistence})
+
+
+
+class LongOrShort(BaseEstimator, TransformerMixin):
+    def __init__(self, column_name, time_to_live, objectif, ratio):
+        self.column_name = column_name
+        self.ttl = time_to_live
+        self.objectif = objectif / 100
+        self.ratio =ratio
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X, y=None):
+        df = X.copy()
+        df = df.reset_index(drop=True)
+
+        df[self.column_name] = 0
+        
+        for idx, row in df.iterrows():
+            tp_long = row['close'] * (1 + self.objectif)
+            sl_long = row['close'] * (1 - (self.objectif / self.ratio))
+            long_status = 'checking'
+
+            tp_short = row['close'] * (1 - self.objectif)
+            sl_short = row['close'] * (1 + (self.objectif / self.ratio))
+            short_status = 'checking'
+
+            for i in range(1, self.ttl + 1):
+                if idx + i >= len(df):
+                    break
+
+                if long_status != 'win' and short_status != 'win':
+                    nxt_high = df.iloc[idx + i]['high']
+                    nxt_low = df.iloc[idx + i]['low']
+
+                    if long_status == 'checking':
+                        if nxt_low <= sl_long:
+                            long_status = 'lose'
+                        elif nxt_high >= tp_long:
+                            long_status = 'win'
+
+                    if short_status == 'checking' and long_status != 'win':
+                        if nxt_high >= sl_short:
+                            short_status = 'lose'
+                        elif nxt_low <= tp_short:
+                            short_status = 'win'
+
+            if long_status == 'win':
+                df.loc[idx, self.column_name] = 1
+            if short_status == 'win':
+                df.loc[idx, self.column_name] = -1
+
+        return X.assign(**{self.column_name: df[self.column_name]})

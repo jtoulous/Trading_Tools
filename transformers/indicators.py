@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.signal import hilbert
 
@@ -151,21 +152,20 @@ class RSI(BaseEstimator, TransformerMixin):
 
 
 class STO(BaseEstimator, TransformerMixin):
-    def __init__(self, col_name, periods):
+    def __init__(self, col_name, k_periods, d_periods):
         self.col_name = col_name
-        self.periods = periods  # (k_period, d_period)
+        self.k_periods = k_periods
+        self.d_periods = d_periods
 
     def fit(self, X, y=None):
         return self
 
     def transform(self, X, y=None):
-        k_periods, d_periods = self.periods
-
-        low_min = X['low'].rolling(window=k_periods).min()
-        high_max = X['high'].rolling(window=k_periods).max()
+        low_min = X['low'].rolling(window=self.k_periods).min()
+        high_max = X['high'].rolling(window=self.k_periods).max()
 
         K = ((X['close'] - low_min) / (high_max - low_min)) * 100
-        D = K.rolling(window=d_periods).mean()
+        D = K.rolling(window=self.d_periods).mean()
 
         X[f'{self.col_name}_K'] = K
         X[f'{self.col_name}_D'] = D
