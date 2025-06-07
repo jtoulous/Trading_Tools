@@ -94,11 +94,11 @@ class TrendPersistanceScorer(BaseEstimator, TransformerMixin):
 
 
 class LongOrShort(BaseEstimator, TransformerMixin):
-    def __init__(self, column_name, time_to_live, objectif, ratio):
+    def __init__(self, column_name, time_to_live, multiplier, ratio):
         self.column_name = column_name
         self.ttl = time_to_live
-        self.objectif = objectif / 100
-        self.ratio =ratio
+        self.multiplier = multiplier
+        self.ratio = ratio
 
     def fit(self, X, y=None):
         return self
@@ -108,14 +108,16 @@ class LongOrShort(BaseEstimator, TransformerMixin):
         df = df.reset_index(drop=True)
 
         df[self.column_name] = 0
+        atr_transformer = ATR('ATR_tmp', self.ttl)
+        df = atr_transformer.transform(df)
         
         for idx, row in df.iterrows():
-            tp_long = row['close'] * (1 + self.objectif)
-            sl_long = row['close'] * (1 - (self.objectif / self.ratio))
+            tp_long = row['close'] + self.multiplier * row['ATR_tmp']
+            sl_long = row['close'] - (self.multiplier * row['ATR_tmp']) / self.ratio
             long_status = 'checking'
 
-            tp_short = row['close'] * (1 - self.objectif)
-            sl_short = row['close'] * (1 + (self.objectif / self.ratio))
+            tp_short = row['close'] - self.multiplier * row['ATR_tmp']
+            sl_short = row['close'] + (self.multiplier * row['ATR_tmp']) / self.ratio
             short_status = 'checking'
 
             for i in range(1, self.ttl + 1):
@@ -142,5 +144,71 @@ class LongOrShort(BaseEstimator, TransformerMixin):
                 df.loc[idx, self.column_name] = 1
             if short_status == 'win':
                 df.loc[idx, self.column_name] = -1
+
+        return X.assign(**{self.column_name: df[self.column_name]})
+
+
+class OptimalTrade(BaseEstimator, TransformerMixin):
+    def __init__(self, column_name, rankings):
+        self.column_name = column_name
+        self.rankings = rankings
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X, y=None):
+        df = X.copy()
+        df[self.column_name] = -1
+
+        for idx, col in enumerate(self.rankings):
+            condition = (df[col] != 0) & (df[self.column_name] == 0)
+            df.loc[condition, self.column_name] = idx
+
+        return X.assign(**{self.column_name: df[self.column_name]})
+
+
+
+class BinaryTrendDirection(BaseEstimator, TransformerMixin):
+    def __init__(self, column_name, periods, shift=False):
+        self.column_name = column_name
+        self.periods = periods
+        self.shift = shift
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X, y=None):
+        df = X.copy()
+        df[self.column_name] = 0
+
+        trend_scorer = TrendDirectionPowerScorer('TREND_TMP', self.periods)
+        df = trend_scorer.transform(df)
+
+        df.loc[(df['TREND_TMP'] < 0), self.column_name] = -1
+        df.loc[(df['TREND_TMP'] > 0), self.column_name] = 1
+
+        if self.shift is True:
+            df[self.column_name] = df[self.column_name].shift(-self.periods)
+
+        return X.assign(**{self.column_name: df[self.column_name]})
+
+
+
+class UpOrDown(BaseEstimator, TransformerMixin):
+    def __init__(self, column_name, periods):
+        self.column_name = column_name
+        self.periods = periods
+
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X, y=None):
+        df = X.copy()
+
+        df['DIFF_TMP'] = df['close'].shift(-self.periods) - df['close']
+        df['DIFF_ZSCORE'] = (df['DIFF_TMP'] - df['DIFF_TMP'].mean()) / df['DIFF_TMP'].std()
+
+        df[self.column_name] = np.tanh(df['DIFF_ZSCORE'])
 
         return X.assign(**{self.column_name: df[self.column_name]})
